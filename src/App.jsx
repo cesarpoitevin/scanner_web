@@ -175,50 +175,49 @@ function App() {
       setOcrStatus('Iniciando OCR...');
       setIsProcessingOCR(true);
       
-      // Create worker with timeout
+      // Create worker with correct API for Tesseract.js v7
       const ocrPromise = (async () => {
-        const worker = createWorker({
+        console.log('Creating Tesseract worker...');
+        setOcrStatus('Carregando modelo de IA...');
+        
+        const worker = await createWorker('por', 1, {
           logger: (m) => {
             console.log('OCR Progress:', m);
             if (m.status === 'recognizing') {
-              setOcrStatus(`OCR: ${(m.progress * 100).toFixed(0)}%`);
+              setOcrStatus(`Reconhecendo: ${(m.progress * 100).toFixed(0)}%`);
+            } else {
+              setOcrStatus(m.status);
             }
           },
         });
         
-        console.log('Loading Tesseract worker...');
-        setOcrStatus('Carregando Tesseract...');
-        await worker.load();
-        
-        console.log('Loading Portuguese language...');
-        setOcrStatus('Carregando idioma português...');
-        await worker.loadLanguage('por');
-        
-        console.log('Initializing worker...');
-        setOcrStatus('Inicializando...');
-        await worker.initialize('por');
-        
-        console.log('Recognizing text...');
-        setOcrStatus('Reconhecendo texto...');
-        const { data: { text } } = await worker.recognize(imageSrc);
-        
-        console.log('OCR result:', text);
-        await worker.terminate();
-        
-        if (text && text.trim()) {
-          setExtractedText(prev => prev + text + '\n\n');
-          setOcrStatus('OCR concluído com sucesso!');
-          setTimeout(() => setOcrStatus(''), 3000);
-        } else {
-          setOcrStatus('OCR: nenhum texto encontrado na imagem');
-          setTimeout(() => setOcrStatus(''), 3000);
+        try {
+          console.log('Recognizing text...');
+          setOcrStatus('Extraindo texto...');
+          const { data: { text } } = await worker.recognize(imageSrc);
+          console.log('OCR result:', text);
+          
+          if (text && text.trim()) {
+            setExtractedText(prev => prev + text + '\n\n');
+            setOcrStatus('OCR concluído com sucesso!');
+            setTimeout(() => setOcrStatus(''), 3000);
+          } else {
+            setOcrStatus('OCR: nenhum texto encontrado na imagem');
+            setTimeout(() => setOcrStatus(''), 3000);
+          }
+          
+          await worker.terminate();
+          setIsProcessingOCR(false);
+        } catch (error) {
+          console.error('Recognition error:', error);
+          await worker.terminate();
+          throw error;
         }
-        setIsProcessingOCR(false);
       })();
       
-      // Timeout after 90 seconds
+      // Timeout after 120 seconds
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('OCR timeout - processamento excedeu 90 segundos')), 90000)
+        setTimeout(() => reject(new Error('OCR timeout - processamento excedeu 120 segundos')), 120000)
       );
       
       await Promise.race([ocrPromise, timeoutPromise]);
