@@ -168,6 +168,25 @@ function App() {
     setIsCameraOn(false);
   }, []);
 
+  const runOCRInBackground = useCallback(async (imageSrc) => {
+    try {
+      console.log('Starting OCR processing in background...');
+      const worker = createWorker({
+        logger: (m) => console.log('OCR:', m),
+      });
+      await worker.load();
+      await worker.loadLanguage('por');
+      await worker.initialize('por');
+      const { data: { text } } = await worker.recognize(imageSrc);
+      console.log('OCR result:', text);
+      await worker.terminate();
+      setExtractedText(prev => prev + text + '\n\n');
+      console.log('OCR completed successfully');
+    } catch (error) {
+      console.error('OCR Error:', error);
+    }
+  }, []);
+
   const capture = useCallback(() => {
     const imageSrc = webcamRef.current.getScreenshot();
     setCapturedImages(prev => [...prev, imageSrc]);
@@ -203,38 +222,13 @@ function App() {
       console.log('Image processed, adding to processed images');
       setProcessedImages(prev => [...prev, processedSrc]);
 
-      // Run OCR on the processed image
-      await runOCR(processedSrc);
+      // Run OCR in background (don't block image processing)
+      runOCRInBackground(processedSrc);
     };
     img.src = imageSrc;
-  }, []);
+  }, [runOCRInBackground]);
 
-  const runOCR = useCallback(async (imageSrc) => {
-    console.log('Starting OCR processing...');
-    setIsProcessingOCR(true);
-    try {
-      const worker = createWorker({
-        logger: (m) => console.log('OCR:', m),
-      });
-      console.log('Loading Tesseract worker...');
-      await worker.load();
-      console.log('Loading Portuguese language...');
-      await worker.loadLanguage('por');
-      console.log('Initializing worker...');
-      await worker.initialize('por');
-      console.log('Recognizing text...');
-      const { data: { text } } = await worker.recognize(imageSrc);
-      console.log('OCR result:', text);
-      await worker.terminate();
-      setExtractedText(prev => prev + text + '\n\n');
-      setIsProcessingOCR(false);
-      console.log('OCR completed successfully');
-    } catch (error) {
-      console.error('OCR Error:', error);
-      setIsProcessingOCR(false);
-      alert('Erro no processamento OCR: ' + error.message);
-    }
-  }, []);
+
 
   const saveDocument = useCallback(async (uploadToDrive = false) => {
     console.log('Starting document save...');
@@ -298,6 +292,17 @@ function App() {
     setSavedDocuments(updatedDocs);
     saveToStorage(updatedDocs);
   }, [savedDocuments, saveToStorage]);
+
+  const downloadDocument = useCallback((doc) => {
+    const url = URL.createObjectURL(doc.pdfBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${doc.name}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
 
   const showDocumentText = useCallback((doc) => {
     setSelectedDocText(doc);
@@ -498,6 +503,9 @@ function App() {
                         <p>{new Date(doc.date).toLocaleDateString()}</p>
                       </div>
                       <div className="doc-actions">
+                        <button className="btn small" onClick={() => downloadDocument(doc)}>
+                          Baixar PDF
+                        </button>
                         <button className="btn small" onClick={() => showDocumentText(doc)}>
                           Ver Texto
                         </button>
