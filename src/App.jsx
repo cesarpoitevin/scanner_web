@@ -46,7 +46,7 @@ function App() {
 
   // Initialize Google API
   useEffect(() => {
-    if (CLIENT_ID === 'YOUR_GOOGLE_CLIENT_ID_HERE' || API_KEY === 'YOUR_GOOGLE_API_KEY_HERE') {
+    if (!CLIENT_ID || !API_KEY) {
       console.warn('Google API credentials are not configured. Google Drive integration is disabled.');
       return;
     }
