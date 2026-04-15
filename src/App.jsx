@@ -245,26 +245,34 @@ function App() {
       canvas.width = img.width;
       canvas.height = img.height;
 
-      // Apply basic enhancements: brightness, contrast, and centering simulation
-      ctx.filter = 'brightness(1.1) contrast(1.2) saturate(1.1)';
       ctx.drawImage(img, 0, 0);
-
-      // Simple centering by cropping edges (basic simulation)
-      const croppedWidth = img.width * 0.9;
-      const croppedHeight = img.height * 0.9;
+      const croppedWidth = img.width * 0.95;
+      const croppedHeight = img.height * 0.95;
       const offsetX = (img.width - croppedWidth) / 2;
       const offsetY = (img.height - croppedHeight) / 2;
-
       const imageData = ctx.getImageData(offsetX, offsetY, croppedWidth, croppedHeight);
+
+      // Convert to grayscale and increase contrast for better OCR
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        const r = imageData.data[i];
+        const g = imageData.data[i + 1];
+        const b = imageData.data[i + 2];
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        const contrast = Math.min(255, Math.max(0, (gray - 128) * 1.4 + 128));
+        const threshold = contrast > 150 ? 255 : 0;
+        imageData.data[i] = threshold;
+        imageData.data[i + 1] = threshold;
+        imageData.data[i + 2] = threshold;
+      }
+
       canvas.width = croppedWidth;
       canvas.height = croppedHeight;
       ctx.putImageData(imageData, 0, 0);
 
-      const processedSrc = canvas.toDataURL('image/jpeg', 0.9);
+      const processedSrc = canvas.toDataURL('image/jpeg', 0.95);
       console.log('Image processed, adding to processed images');
       setProcessedImages(prev => [...prev, processedSrc]);
 
-      // Run OCR in background (don't block image processing)
       runOCRInBackground(processedSrc);
     };
     img.src = imageSrc;
