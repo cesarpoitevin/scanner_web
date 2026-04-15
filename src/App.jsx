@@ -192,6 +192,15 @@ function App() {
         });
         
         try {
+          console.log('Setting OCR parameters...');
+          setOcrStatus('Ajustando OCR...');
+          await worker.setParameters({
+            tessedit_pageseg_mode: '6',
+            preserve_interword_spaces: '1',
+            tessedit_ocr_engine_mode: '1',
+            textord_heavy_nr: '1'
+          });
+
           console.log('Recognizing text...');
           setOcrStatus('Extraindo texto...');
           const { data: { text } } = await worker.recognize(imageSrc);
@@ -242,34 +251,41 @@ function App() {
     const img = new Image();
     img.onload = async () => {
       console.log('Image loaded, dimensions:', img.width, 'x', img.height);
-      canvas.width = img.width;
-      canvas.height = img.height;
 
-      ctx.drawImage(img, 0, 0);
-      const croppedWidth = img.width * 0.95;
-      const croppedHeight = img.height * 0.95;
-      const offsetX = (img.width - croppedWidth) / 2;
-      const offsetY = (img.height - croppedHeight) / 2;
+      const scaleFactor = Math.min(1.8, Math.max(1, 1500 / img.width));
+      const processedWidth = img.width * scaleFactor;
+      const processedHeight = img.height * scaleFactor;
+
+      canvas.width = processedWidth;
+      canvas.height = processedHeight;
+      ctx.drawImage(img, 0, 0, processedWidth, processedHeight);
+
+      const croppedWidth = processedWidth * 0.96;
+      const croppedHeight = processedHeight * 0.96;
+      const offsetX = (processedWidth - croppedWidth) / 2;
+      const offsetY = (processedHeight - croppedHeight) / 2;
       const imageData = ctx.getImageData(offsetX, offsetY, croppedWidth, croppedHeight);
 
-      // Convert to grayscale and increase contrast for better OCR
-      for (let i = 0; i < imageData.data.length; i += 4) {
-        const r = imageData.data[i];
-        const g = imageData.data[i + 1];
-        const b = imageData.data[i + 2];
-        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-        const contrast = Math.min(255, Math.max(0, (gray - 128) * 1.4 + 128));
-        const threshold = contrast > 150 ? 255 : 0;
-        imageData.data[i] = threshold;
-        imageData.data[i + 1] = threshold;
-        imageData.data[i + 2] = threshold;
+      // Convert to grayscale and improve contrast
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        const adjusted = 1.25 * (gray - 128) + 128;
+        data[i] = data[i + 1] = data[i + 2] = adjusted;
+      }
+
+      // Apply a rough adaptive threshold for better text clarity
+      for (let i = 0; i < data.length; i += 4) {
+        const val = data[i];
+        const threshold = val > 140 ? 255 : 0;
+        data[i] = data[i + 1] = data[i + 2] = threshold;
       }
 
       canvas.width = croppedWidth;
       canvas.height = croppedHeight;
       ctx.putImageData(imageData, 0, 0);
 
-      const processedSrc = canvas.toDataURL('image/jpeg', 0.95);
+      const processedSrc = canvas.toDataURL('image/jpeg', 0.96);
       console.log('Image processed, adding to processed images');
       setProcessedImages(prev => [...prev, processedSrc]);
 
