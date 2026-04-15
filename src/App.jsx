@@ -13,6 +13,7 @@ function App() {
   const [extractedText, setExtractedText] = useState('');
   const [isProcessingOCR, setIsProcessingOCR] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
+  const [ocrMode, setOcrMode] = useState('normal');
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [savedDocuments, setSavedDocuments] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('trabalho');
@@ -24,6 +25,11 @@ function App() {
   const [uploadToDrive, setUploadToDrive] = useState(false);
 
   const categories = ['trabalho', 'estudos', 'diversos'];
+  const ocrModes = [
+    { value: 'normal', label: 'Normal' },
+    { value: 'aprimorado', label: 'Aprimorado' },
+    { value: 'documento', label: 'Documento Claro' },
+  ];
 
   // Google Drive API configuration
   const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -195,10 +201,12 @@ function App() {
           console.log('Setting OCR parameters...');
           setOcrStatus('Ajustando OCR...');
           await worker.setParameters({
-            tessedit_pageseg_mode: '6',
+            tessedit_pageseg_mode: '3',        // Auto layout detection (better than fixed block)
             preserve_interword_spaces: '1',
-            tessedit_ocr_engine_mode: '1',
-            textord_heavy_nr: '1'
+            tessedit_ocr_engine_mode: '1',     // LSTM neural net only (most accurate)
+            user_defined_dpi: '300',           // DPI hint for better scaling decisions
+            textord_heavy_nr: '0',             // Disable heavy noise reduction (it can corrupt chars)
+            tessedit_do_invert: '0',           // Don't auto-invert (we handle preprocessing)
           });
 
           console.log('Recognizing text...');
@@ -244,6 +252,70 @@ function App() {
     processImage(imageSrc);
   }, []);
 
+  const computeOtsuThreshold = useCallback((imageData) => {
+    const data = imageData.data;
+    const histogram = new Array(256).fill(0);
+    const total = data.length / 4;
+
+    for (let i = 0; i < data.length; i += 4) {
+      histogram[data[i]]++;
+    }
+
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * histogram[t];
+
+    let sumB = 0, wB = 0, maxVariance = 0, threshold = 128;
+
+    for (let t = 0; t < 256; t++) {
+      wB += histogram[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+
+      sumB += t * histogram[t];
+      const mB = sumB / wB;
+      const mF = (sum - sumB) / wF;
+      const variance = wB * wF * (mB - mF) ** 2;
+
+      if (variance > maxVariance) {
+        maxVariance = variance;
+        threshold = t;
+      }
+    }
+
+    return threshold;
+  }, []);
+
+  const applyOcrPreprocessing = useCallback((imageData, mode) => {
+    const data = imageData.data;
+
+    // Convert to grayscale and optionally enhance contrast
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      let adjusted = gray;
+
+      if (mode === 'aprimorado') {
+        adjusted = Math.min(255, Math.max(0, (gray - 128) * 1.8 + 128));
+      } else if (mode === 'documento') {
+        adjusted = Math.min(255, Math.max(0, (gray - 128) * 1.4 + 128));
+      } else {
+        // Normal: light contrast boost to help OCR
+        adjusted = Math.min(255, Math.max(0, (gray - 128) * 1.2 + 128));
+      }
+
+      data[i] = data[i + 1] = data[i + 2] = adjusted;
+    }
+
+    // Apply Otsu's automatic threshold for all modes (better than fixed 145)
+    const threshold = computeOtsuThreshold(imageData);
+    for (let i = 0; i < data.length; i += 4) {
+      const value = data[i] > threshold ? 255 : 0;
+      data[i] = data[i + 1] = data[i + 2] = value;
+    }
+
+    return imageData;
+  }, [computeOtsuThreshold]);
+
   const processImage = useCallback(async (imageSrc) => {
     console.log('Processing image...');
     const canvas = canvasRef.current;
@@ -252,7 +324,7 @@ function App() {
     img.onload = async () => {
       console.log('Image loaded, dimensions:', img.width, 'x', img.height);
 
-      const scaleFactor = Math.min(1.8, Math.max(1, 1500 / img.width));
+      const scaleFactor = Math.min(3.0, Math.max(1, 2000 / img.width));
       const processedWidth = img.width * scaleFactor;
       const processedHeight = img.height * scaleFactor;
 
@@ -266,33 +338,19 @@ function App() {
       const offsetY = (processedHeight - croppedHeight) / 2;
       const imageData = ctx.getImageData(offsetX, offsetY, croppedWidth, croppedHeight);
 
-      // Convert to grayscale and improve contrast
-      const data = imageData.data;
-      for (let i = 0; i < data.length; i += 4) {
-        const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        const adjusted = 1.25 * (gray - 128) + 128;
-        data[i] = data[i + 1] = data[i + 2] = adjusted;
-      }
-
-      // Apply a rough adaptive threshold for better text clarity
-      for (let i = 0; i < data.length; i += 4) {
-        const val = data[i];
-        const threshold = val > 140 ? 255 : 0;
-        data[i] = data[i + 1] = data[i + 2] = threshold;
-      }
-
+      const preprocessed = applyOcrPreprocessing(imageData, ocrMode);
       canvas.width = croppedWidth;
       canvas.height = croppedHeight;
-      ctx.putImageData(imageData, 0, 0);
+      ctx.putImageData(preprocessed, 0, 0);
 
-      const processedSrc = canvas.toDataURL('image/jpeg', 0.96);
+      const processedSrc = canvas.toDataURL('image/png');
       console.log('Image processed, adding to processed images');
       setProcessedImages(prev => [...prev, processedSrc]);
 
       runOCRInBackground(processedSrc);
     };
     img.src = imageSrc;
-  }, [runOCRInBackground]);
+  }, [ocrMode, applyOcrPreprocessing, runOCRInBackground]);
 
 
 
@@ -520,6 +578,15 @@ function App() {
                   onChange={(e) => setDocumentName(e.target.value)}
                   className="doc-name-input"
                 />
+                <select
+                  value={ocrMode}
+                  onChange={(e) => setOcrMode(e.target.value)}
+                  className="category-select"
+                >
+                  {ocrModes.map(mode => (
+                    <option key={mode.value} value={mode.value}>{mode.label}</option>
+                  ))}
+                </select>
                 <select
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
