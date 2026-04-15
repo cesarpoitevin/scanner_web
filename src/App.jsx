@@ -175,10 +175,12 @@ function App() {
   }, []);
 
   const processImage = useCallback(async (imageSrc) => {
+    console.log('Processing image...');
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     const img = new Image();
     img.onload = async () => {
+      console.log('Image loaded, dimensions:', img.width, 'x', img.height);
       canvas.width = img.width;
       canvas.height = img.height;
 
@@ -198,6 +200,7 @@ function App() {
       ctx.putImageData(imageData, 0, 0);
 
       const processedSrc = canvas.toDataURL('image/jpeg', 0.9);
+      console.log('Image processed, adding to processed images');
       setProcessedImages(prev => [...prev, processedSrc]);
 
       // Run OCR on the processed image
@@ -207,59 +210,87 @@ function App() {
   }, []);
 
   const runOCR = useCallback(async (imageSrc) => {
+    console.log('Starting OCR processing...');
     setIsProcessingOCR(true);
-    const worker = createWorker({
-      logger: (m) => console.log(m),
-    });
-    await worker.load();
-    await worker.loadLanguage('por');
-    await worker.initialize('por');
-    const { data: { text } } = await worker.recognize(imageSrc);
-    await worker.terminate();
-    setExtractedText(prev => prev + text + '\n\n');
-    setIsProcessingOCR(false);
+    try {
+      const worker = createWorker({
+        logger: (m) => console.log('OCR:', m),
+      });
+      console.log('Loading Tesseract worker...');
+      await worker.load();
+      console.log('Loading Portuguese language...');
+      await worker.loadLanguage('por');
+      console.log('Initializing worker...');
+      await worker.initialize('por');
+      console.log('Recognizing text...');
+      const { data: { text } } = await worker.recognize(imageSrc);
+      console.log('OCR result:', text);
+      await worker.terminate();
+      setExtractedText(prev => prev + text + '\n\n');
+      setIsProcessingOCR(false);
+      console.log('OCR completed successfully');
+    } catch (error) {
+      console.error('OCR Error:', error);
+      setIsProcessingOCR(false);
+      alert('Erro no processamento OCR: ' + error.message);
+    }
   }, []);
 
   const saveDocument = useCallback(async (uploadToDrive = false) => {
-    if (processedImages.length === 0 || !documentName.trim()) return;
-
-    const pdf = new jsPDF();
-    processedImages.forEach((imgSrc, index) => {
-      if (index > 0) pdf.addPage();
-      pdf.addImage(imgSrc, 'JPEG', 10, 10, 190, 140);
-    });
-
-    const pdfBlob = pdf.output('blob');
-    const newDoc = {
-      id: Date.now(),
-      name: documentName,
-      category: selectedCategory,
-      pdfBlob: pdfBlob,
-      date: new Date().toISOString(),
-      preview: processedImages[0],
-      extractedText: extractedText
-    };
-
-    const updatedDocs = [...savedDocuments, newDoc];
-    setSavedDocuments(updatedDocs);
-    saveToStorage(updatedDocs);
-
-    if (uploadToDrive && isGoogleSignedIn) {
-      try {
-        const file = new File([pdfBlob], `${documentName}.pdf`, { type: 'application/pdf' });
-        await uploadToGoogleDrive(file, `${documentName}.pdf`);
-        alert('Documento salvo localmente e enviado para Google Drive!');
-      } catch (error) {
-        alert('Documento salvo localmente, mas falhou o upload para Google Drive.');
-      }
-    } else {
-      alert('Documento salvo com sucesso!');
+    console.log('Starting document save...');
+    if (processedImages.length === 0 || !documentName.trim()) {
+      console.log('Missing images or document name');
+      return;
     }
 
-    // Reset
-    setCapturedImages([]);
-    setProcessedImages([]);
-    setDocumentName('');
+    try {
+      console.log('Creating PDF...');
+      const pdf = new jsPDF();
+      processedImages.forEach((imgSrc, index) => {
+        if (index > 0) pdf.addPage();
+        pdf.addImage(imgSrc, 'JPEG', 10, 10, 190, 140);
+      });
+
+      const pdfBlob = pdf.output('blob');
+      console.log('PDF created, size:', pdfBlob.size);
+
+      const newDoc = {
+        id: Date.now(),
+        name: documentName,
+        category: selectedCategory,
+        pdfBlob: pdfBlob,
+        date: new Date().toISOString(),
+        preview: processedImages[0],
+        extractedText: extractedText
+      };
+
+      const updatedDocs = [...savedDocuments, newDoc];
+      setSavedDocuments(updatedDocs);
+      saveToStorage(updatedDocs);
+      console.log('Document saved locally');
+
+      if (uploadToDrive && isGoogleSignedIn) {
+        try {
+          console.log('Uploading to Google Drive...');
+          const file = new File([pdfBlob], `${documentName}.pdf`, { type: 'application/pdf' });
+          await uploadToGoogleDrive(file, `${documentName}.pdf`);
+          alert('Documento salvo localmente e enviado para Google Drive!');
+        } catch (error) {
+          console.error('Google Drive upload error:', error);
+          alert('Documento salvo localmente, mas falhou o upload para Google Drive.');
+        }
+      } else {
+        alert('Documento salvo com sucesso!');
+      }
+
+      // Reset
+      setCapturedImages([]);
+      setProcessedImages([]);
+      setDocumentName('');
+    } catch (error) {
+      console.error('Save document error:', error);
+      alert('Erro ao salvar documento: ' + error.message);
+    }
   }, [processedImages, documentName, selectedCategory, savedDocuments, saveToStorage, extractedText]);
 
   const deleteDocument = useCallback((id) => {
