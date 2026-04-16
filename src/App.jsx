@@ -34,13 +34,14 @@ function App() {
   // Google Drive API configuration
   const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
   const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || '';
+  const VISION_API_KEY = import.meta.env.VITE_GOOGLE_VISION_API_KEY || '';
   const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'];
   const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
   const videoConstraints = {
-    width: 1280,
-    height: 720,
-    facingMode: 'environment'
+    width: { ideal: 1920 },
+    height: { ideal: 1080 },
+    facingMode: 'environment',
   };
 
   // Load saved documents from localStorage
@@ -175,17 +176,61 @@ function App() {
     setIsCameraOn(false);
   }, []);
 
+  const runVisionOCR = useCallback(async (imageSrc) => {
+    // Strip the data:image/...;base64, prefix
+    const base64 = imageSrc.split(',')[1];
+    const response = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            image: { content: base64 },
+            features: [{ type: 'DOCUMENT_TEXT_DETECTION', maxResults: 1 }],
+            imageContext: { languageHints: ['pt', 'pt-BR'] },
+          }],
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `Vision API error ${response.status}`);
+    }
+
+    const json = await response.json();
+    const annotation = json.responses?.[0]?.fullTextAnnotation;
+    return annotation?.text || '';
+  }, [VISION_API_KEY]);
+
   const runOCRInBackground = useCallback(async (imageSrc) => {
     try {
       console.log('Starting OCR processing in background...');
       setOcrStatus('Iniciando OCR...');
       setIsProcessingOCR(true);
-      
-      // Create worker with correct API for Tesseract.js v7
+
       const ocrPromise = (async () => {
+        // Use Google Vision API when key is available — much more accurate
+        if (VISION_API_KEY) {
+          console.log('Using Google Vision API...');
+          setOcrStatus('Enviando para Google Vision...');
+          const text = await runVisionOCR(imageSrc);
+          if (text && text.trim()) {
+            setExtractedText(prev => prev + text + '\n\n');
+            setOcrStatus('OCR concluído com sucesso!');
+          } else {
+            setOcrStatus('OCR: nenhum texto encontrado na imagem');
+          }
+          setTimeout(() => setOcrStatus(''), 3000);
+          setIsProcessingOCR(false);
+          return;
+        }
+
+        // Fallback: Tesseract.js (client-side, lower accuracy)
         console.log('Creating Tesseract worker...');
         setOcrStatus('Carregando modelo de IA...');
-        
+
         const worker = await createWorker('por', 1, {
           logger: (m) => {
             console.log('OCR Progress:', m);
@@ -196,24 +241,24 @@ function App() {
             }
           },
         });
-        
+
         try {
           console.log('Setting OCR parameters...');
           setOcrStatus('Ajustando OCR...');
           await worker.setParameters({
-            tessedit_pageseg_mode: '3',        // Auto layout detection (better than fixed block)
+            tessedit_pageseg_mode: '3',
             preserve_interword_spaces: '1',
-            tessedit_ocr_engine_mode: '1',     // LSTM neural net only (most accurate)
-            user_defined_dpi: '300',           // DPI hint for better scaling decisions
-            textord_heavy_nr: '0',             // Disable heavy noise reduction (it can corrupt chars)
-            tessedit_do_invert: '0',           // Don't auto-invert (we handle preprocessing)
+            tessedit_ocr_engine_mode: '1',
+            user_defined_dpi: '300',
+            textord_heavy_nr: '0',
+            tessedit_do_invert: '0',
           });
 
           console.log('Recognizing text...');
           setOcrStatus('Extraindo texto...');
           const { data: { text } } = await worker.recognize(imageSrc);
           console.log('OCR result:', text);
-          
+
           if (text && text.trim()) {
             setExtractedText(prev => prev + text + '\n\n');
             setOcrStatus('OCR concluído com sucesso!');
@@ -222,7 +267,7 @@ function App() {
             setOcrStatus('OCR: nenhum texto encontrado na imagem');
             setTimeout(() => setOcrStatus(''), 3000);
           }
-          
+
           await worker.terminate();
           setIsProcessingOCR(false);
         } catch (error) {
@@ -289,24 +334,31 @@ function App() {
   const applyOcrPreprocessing = useCallback((imageData, mode) => {
     const data = imageData.data;
 
-    // Convert to grayscale and optionally enhance contrast
+    // Step 1: Convert to grayscale (all modes)
     for (let i = 0; i < data.length; i += 4) {
       const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      let adjusted = gray;
-
-      if (mode === 'aprimorado') {
-        adjusted = Math.min(255, Math.max(0, (gray - 128) * 1.8 + 128));
-      } else if (mode === 'documento') {
-        adjusted = Math.min(255, Math.max(0, (gray - 128) * 1.4 + 128));
-      } else {
-        // Normal: light contrast boost to help OCR
-        adjusted = Math.min(255, Math.max(0, (gray - 128) * 1.2 + 128));
-      }
-
-      data[i] = data[i + 1] = data[i + 2] = adjusted;
+      data[i] = data[i + 1] = data[i + 2] = gray;
     }
 
-    // Apply Otsu's automatic threshold for all modes (better than fixed 145)
+    if (mode === 'normal') {
+      // Normal: pure grayscale — Tesseract LSTM reads best from unmodified gray
+      return imageData;
+    }
+
+    if (mode === 'documento') {
+      // Documento: mild contrast stretch (no hard binarization — keeps character details)
+      for (let i = 0; i < data.length; i += 4) {
+        const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.4 + 128));
+        data[i] = data[i + 1] = data[i + 2] = v;
+      }
+      return imageData;
+    }
+
+    // Aprimorado: strong contrast + Otsu binarization (for very dark / low-contrast docs)
+    for (let i = 0; i < data.length; i += 4) {
+      const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.8 + 128));
+      data[i] = data[i + 1] = data[i + 2] = v;
+    }
     const threshold = computeOtsuThreshold(imageData);
     for (let i = 0; i < data.length; i += 4) {
       const value = data[i] > threshold ? 255 : 0;
@@ -513,7 +565,7 @@ function App() {
                 <Webcam
                   audio={false}
                   ref={webcamRef}
-                  screenshotFormat="image/jpeg"
+                  screenshotFormat="image/png"
                   videoConstraints={videoConstraints}
                   style={{ width: '100%', height: 'auto' }}
                 />
