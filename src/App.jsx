@@ -333,6 +333,26 @@ function App() {
     return threshold;
   }, []);
 
+  // 3x3 unsharp-mask sharpening — improves text edge clarity for OCR
+  const applySharpening = useCallback((imageData) => {
+    const w = imageData.width;
+    const h = imageData.height;
+    const src = new Uint8ClampedArray(imageData.data);
+    const dst = imageData.data;
+    // kernel: [-1,-1,-1 / -1,9,-1 / -1,-1,-1]
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = (y * w + x) * 4;
+        const v = 9 * src[i]
+          - src[((y-1)*w + (x-1))*4] - src[((y-1)*w + x)*4] - src[((y-1)*w + (x+1))*4]
+          - src[(y*w + (x-1))*4]                              - src[(y*w + (x+1))*4]
+          - src[((y+1)*w + (x-1))*4] - src[((y+1)*w + x)*4] - src[((y+1)*w + (x+1))*4];
+        dst[i] = dst[i+1] = dst[i+2] = Math.min(255, Math.max(0, v));
+      }
+    }
+    return imageData;
+  }, []);
+
   const applyOcrPreprocessing = useCallback((imageData, mode) => {
     const data = imageData.data;
 
@@ -343,17 +363,17 @@ function App() {
     }
 
     if (mode === 'normal') {
-      // Normal: pure grayscale — Tesseract LSTM reads best from unmodified gray
-      return imageData;
+      // Normal: grayscale + sharpening — crisp edges help LSTM without distorting characters
+      return applySharpening(imageData);
     }
 
     if (mode === 'documento') {
-      // Documento: mild contrast stretch (no hard binarization — keeps character details)
+      // Documento: contrast stretch + sharpening
       for (let i = 0; i < data.length; i += 4) {
         const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.4 + 128));
         data[i] = data[i + 1] = data[i + 2] = v;
       }
-      return imageData;
+      return applySharpening(imageData);
     }
 
     // Aprimorado: strong contrast + Otsu binarization (for very dark / low-contrast docs)
@@ -361,6 +381,7 @@ function App() {
       const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.8 + 128));
       data[i] = data[i + 1] = data[i + 2] = v;
     }
+    applySharpening(imageData);
     const threshold = computeOtsuThreshold(imageData);
     for (let i = 0; i < data.length; i += 4) {
       const value = data[i] > threshold ? 255 : 0;
@@ -368,7 +389,7 @@ function App() {
     }
 
     return imageData;
-  }, [computeOtsuThreshold]);
+  }, [computeOtsuThreshold, applySharpening]);
 
   const processImage = useCallback(async (imageSrc) => {
     console.log('Processing image...');
@@ -387,15 +408,9 @@ function App() {
       canvas.height = processedHeight;
       ctx.drawImage(img, 0, 0, processedWidth, processedHeight);
 
-      const croppedWidth = processedWidth * 0.96;
-      const croppedHeight = processedHeight * 0.96;
-      const offsetX = (processedWidth - croppedWidth) / 2;
-      const offsetY = (processedHeight - croppedHeight) / 2;
-      const imageData = ctx.getImageData(offsetX, offsetY, croppedWidth, croppedHeight);
+      const imageData = ctx.getImageData(0, 0, processedWidth, processedHeight);
 
       const preprocessed = applyOcrPreprocessing(imageData, ocrMode);
-      canvas.width = croppedWidth;
-      canvas.height = croppedHeight;
       ctx.putImageData(preprocessed, 0, 0);
 
       const processedSrc = canvas.toDataURL('image/png');
