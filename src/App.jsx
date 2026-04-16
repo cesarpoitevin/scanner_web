@@ -213,18 +213,29 @@ function App() {
       const ocrPromise = (async () => {
         // Use Google Vision API when key is available — much more accurate
         if (VISION_API_KEY) {
-          console.log('Using Google Vision API...');
-          setOcrStatus('Enviando para Google Vision...');
-          const text = await runVisionOCR(imageSrc);
-          if (text && text.trim()) {
-            setExtractedText(prev => prev + text + '\n\n');
-            setOcrStatus('OCR concluído com sucesso!');
-          } else {
-            setOcrStatus('OCR: nenhum texto encontrado na imagem');
+          try {
+            console.log('Using Google Vision API...');
+            setOcrStatus('Enviando para Google Vision...');
+            const text = await runVisionOCR(imageSrc);
+            if (text && text.trim()) {
+              setExtractedText(prev => prev + text + '\n\n');
+              setOcrStatus('OCR concluído com sucesso! (Google Vision)');
+            } else {
+              setOcrStatus('OCR: nenhum texto encontrado na imagem');
+            }
+            setTimeout(() => setOcrStatus(''), 3000);
+            setIsProcessingOCR(false);
+            return;
+          } catch (visionError) {
+            const msg = visionError.message || '';
+            if (msg.includes('billing') || msg.includes('BILLING') || msg.includes('403')) {
+              console.warn('Vision API billing not enabled, falling back to Tesseract:', msg);
+              setOcrStatus('Google Vision requer faturamento — usando Tesseract...');
+            } else {
+              console.warn('Vision API error, falling back to Tesseract:', msg);
+              setOcrStatus('Erro no Vision API — usando Tesseract...');
+            }
           }
-          setTimeout(() => setOcrStatus(''), 3000);
-          setIsProcessingOCR(false);
-          return;
         }
 
         // Fallback: Tesseract.js (client-side, lower accuracy)
