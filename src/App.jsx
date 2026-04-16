@@ -1,754 +1,665 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import jsPDF from 'jspdf';
-import { createWorker } from 'tesseract.js';
 import { gapi } from 'gapi-script';
 import './App.css';
 
 function App() {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
-  const [capturedImages, setCapturedImages] = useState([]);
-  const [processedImages, setProcessedImages] = useState([]);
-  const [extractedText, setExtractedText] = useState('');
-  const [isProcessingOCR, setIsProcessingOCR] = useState(false);
-  const [ocrStatus, setOcrStatus] = useState('');
-  const [ocrMode, setOcrMode] = useState('normal');
+
+  // Camera
   const [isCameraOn, setIsCameraOn] = useState(false);
-  const [savedDocuments, setSavedDocuments] = useState([]);
-  const [selectedCategory, setSelectedCategory] = useState('trabalho');
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
+  const [facingMode, setFacingMode] = useState('environment');
+
+  // Images & document
+  const [processedImages, setProcessedImages] = useState([]);
+  const [scanFilter, setScanFilter] = useState('enhanced');
   const [documentName, setDocumentName] = useState('');
-  const [selectedDocText, setSelectedDocText] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState('Geral');
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Saved documents
+  const [savedDocuments, setSavedDocuments] = useState([]);
   const [currentView, setCurrentView] = useState('scanner');
-  const [googleUser, setGoogleUser] = useState(null);
+
+  // Modals
+  const [shareModal, setShareModal] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [previewDoc, setPreviewDoc] = useState(null);
+
+  // Google Drive (lazy)
   const [isGoogleSignedIn, setIsGoogleSignedIn] = useState(false);
-  const [uploadToDrive, setUploadToDrive] = useState(false);
+  const [googleUser, setGoogleUser] = useState(null);
+  const [isDriveLoading, setIsDriveLoading] = useState(false);
 
-  const categories = ['trabalho', 'estudos', 'diversos'];
-  const ocrModes = [
-    { value: 'normal', label: 'Normal' },
-    { value: 'aprimorado', label: 'Aprimorado' },
-    { value: 'documento', label: 'Documento Claro' },
-  ];
-
-  // Google Drive API configuration
   const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
   const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || '';
-  const VISION_API_KEY = import.meta.env.VITE_GOOGLE_VISION_API_KEY || '';
-  const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'];
-  const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+
+  const categories = ['Geral', 'Trabalho', 'Estudos', 'Pessoal', 'Financeiro'];
+
+  const filters = [
+    { value: 'original', label: 'Original' },
+    { value: 'grayscale', label: 'Cinza' },
+    { value: 'enhanced', label: 'Nítido' },
+    { value: 'bw', label: 'P&B' },
+  ];
 
   const videoConstraints = {
     width: { ideal: 1920 },
     height: { ideal: 1080 },
-    facingMode: 'environment',
+    facingMode,
   };
 
-  // Load saved documents from localStorage
+  // Load saved documents
   useEffect(() => {
-    const saved = localStorage.getItem('scannerDocuments');
-    if (saved) {
-      setSavedDocuments(JSON.parse(saved));
-    }
-  }, []);
-
-  // Initialize Google API
-  useEffect(() => {
-    if (!CLIENT_ID || !API_KEY) {
-      console.warn('Google API credentials are not configured. Google Drive integration is disabled.');
-      return;
-    }
-
-    const initClient = () => {
-      gapi.client.init({
-        apiKey: API_KEY,
-        clientId: CLIENT_ID,
-        discoveryDocs: DISCOVERY_DOCS,
-        scope: SCOPES,
-      }).then(() => {
-        gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
-        updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
-      }).catch((error) => {
-        console.error('Error initializing Google API:', error);
-      });
-    };
-
-    const loadGoogleApi = () => {
-      const gapiInstance = window.gapi || gapi;
-      if (!gapiInstance) {
-        console.warn('gapi não disponível');
-        return;
-      }
-      gapiInstance.load('client:auth2', initClient);
-    };
-
-    if (window.gapi) {
-      loadGoogleApi();
-    } else {
-      window.addEventListener('load', loadGoogleApi);
-      return () => window.removeEventListener('load', loadGoogleApi);
-    }
-  }, []);
-
-  const updateSigninStatus = (isSignedIn) => {
-    setIsGoogleSignedIn(isSignedIn);
-    if (isSignedIn && window.gapi) {
-      const user = gapi.auth2.getAuthInstance().currentUser.get();
-      setGoogleUser(user.getBasicProfile());
-    } else {
-      setGoogleUser(null);
-      setUploadToDrive(false);
-    }
-  };
-
-  const handleGoogleSignIn = async () => {
-    if (!window.gapi) {
-      alert('Google API ainda não foi carregada. Recarregue a página e tente novamente.');
-      return;
-    }
-
-    const authInstance = gapi.auth2.getAuthInstance();
-    if (!authInstance) {
-      alert('Não foi possível iniciar o login do Google.');
-      return;
-    }
-
     try {
-      await authInstance.signIn();
-      updateSigninStatus(authInstance.isSignedIn.get());
-    } catch (error) {
-      console.error('Erro ao conectar com Google Drive:', error);
-      alert('Falha ao conectar com Google Drive. Verifique as permissões.');
+      const saved = localStorage.getItem('scannerDocuments');
+      if (saved) setSavedDocuments(JSON.parse(saved));
+    } catch (e) {
+      console.error('Error loading saved documents:', e);
     }
-  };
+  }, []);
 
-  const handleGoogleSignOut = async () => {
-    if (!window.gapi) return;
-    const authInstance = gapi.auth2.getAuthInstance();
-    if (!authInstance) return;
-    await authInstance.signOut();
-    setIsGoogleSignedIn(false);
-    setGoogleUser(null);
-    setUploadToDrive(false);
-  };
+  // Detect torch support when camera starts
+  const handleCameraStart = useCallback(() => {
+    const stream = webcamRef.current?.video?.srcObject;
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    const caps = track?.getCapabilities?.();
+    if (caps?.torch) setTorchSupported(true);
+  }, []);
 
-  const uploadToGoogleDrive = async (file, fileName) => {
-    if (!window.gapi) throw new Error('Google API não carregada');
-    const authInstance = gapi.auth2.getAuthInstance();
-    if (!authInstance) throw new Error('Instância de autenticação do Google não disponível');
-
-    const accessToken = authInstance.currentUser.get().getAuthResponse().access_token;
-    const metadata = {
-      name: fileName,
-      mimeType: file.type,
-    };
-
-    const form = new FormData();
-    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-    form.append('file', file);
-
-    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: form,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText);
+  const toggleTorch = useCallback(async () => {
+    const stream = webcamRef.current?.video?.srcObject;
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      const next = !torchOn;
+      await track.applyConstraints({ advanced: [{ torch: next }] });
+      setTorchOn(next);
+    } catch (e) {
+      console.warn('Torch not supported:', e);
     }
+  }, [torchOn]);
 
-    return response.json();
-  };
+  const flipCamera = useCallback(() => {
+    setFacingMode(prev => prev === 'environment' ? 'user' : 'environment');
+  }, []);
 
-  // Save to localStorage
   const saveToStorage = useCallback((docs) => {
-    localStorage.setItem('scannerDocuments', JSON.stringify(docs));
-  }, []);
-
-  const startCamera = useCallback(() => {
-    setIsCameraOn(true);
-  }, []);
-
-  const stopCamera = useCallback(() => {
-    setIsCameraOn(false);
-  }, []);
-
-  const runVisionOCR = useCallback(async (imageSrc) => {
-    // Strip the data:image/...;base64, prefix
-    const base64 = imageSrc.split(',')[1];
-    const response = await fetch(
-      `https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requests: [{
-            image: { content: base64 },
-            features: [{ type: 'DOCUMENT_TEXT_DETECTION', maxResults: 1 }],
-            imageContext: { languageHints: ['pt', 'pt-BR'] },
-          }],
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `Vision API error ${response.status}`);
-    }
-
-    const json = await response.json();
-    const annotation = json.responses?.[0]?.fullTextAnnotation;
-    return annotation?.text || '';
-  }, [VISION_API_KEY]);
-
-  const runOCRInBackground = useCallback(async (imageSrc) => {
     try {
-      console.log('Starting OCR processing in background...');
-      setOcrStatus('Iniciando OCR...');
-      setIsProcessingOCR(true);
-
-      const ocrPromise = (async () => {
-        // Use Google Vision API when key is available — much more accurate
-        if (VISION_API_KEY) {
-          try {
-            console.log('Using Google Vision API...');
-            setOcrStatus('Enviando para Google Vision...');
-            const text = await runVisionOCR(imageSrc);
-            if (text && text.trim()) {
-              setExtractedText(prev => prev + text + '\n\n');
-              setOcrStatus('OCR concluído com sucesso! (Google Vision)');
-            } else {
-              setOcrStatus('OCR: nenhum texto encontrado na imagem');
-            }
-            setTimeout(() => setOcrStatus(''), 3000);
-            setIsProcessingOCR(false);
-            return;
-          } catch (visionError) {
-            const msg = visionError.message || '';
-            if (msg.includes('billing') || msg.includes('BILLING') || msg.includes('403')) {
-              console.warn('Vision API billing not enabled, falling back to Tesseract:', msg);
-              setOcrStatus('Google Vision requer faturamento — usando Tesseract...');
-            } else {
-              console.warn('Vision API error, falling back to Tesseract:', msg);
-              setOcrStatus('Erro no Vision API — usando Tesseract...');
-            }
-          }
-        }
-
-        // Fallback: Tesseract.js (client-side, lower accuracy)
-        console.log('Creating Tesseract worker...');
-        setOcrStatus('Carregando modelo de IA...');
-
-        const worker = await createWorker('por', 1, {
-          logger: (m) => {
-            console.log('OCR Progress:', m);
-            if (m.status === 'recognizing') {
-              setOcrStatus(`Reconhecendo: ${(m.progress * 100).toFixed(0)}%`);
-            } else {
-              setOcrStatus(m.status);
-            }
-          },
-        });
-
-        try {
-          console.log('Setting OCR parameters...');
-          setOcrStatus('Ajustando OCR...');
-          await worker.setParameters({
-            tessedit_pageseg_mode: '3',
-            preserve_interword_spaces: '1',
-            tessedit_ocr_engine_mode: '1',
-            user_defined_dpi: '300',
-            textord_heavy_nr: '0',
-            tessedit_do_invert: '0',
-          });
-
-          console.log('Recognizing text...');
-          setOcrStatus('Extraindo texto...');
-          const { data: { text } } = await worker.recognize(imageSrc);
-          console.log('OCR result:', text);
-
-          if (text && text.trim()) {
-            setExtractedText(prev => prev + text + '\n\n');
-            setOcrStatus('✓ OCR concluído (Tesseract)');
-          } else {
-            setOcrStatus('⚠ Tesseract não encontrou texto. Tente o modo Aprimorado ou melhore a iluminação.');
-          }
-
-          await worker.terminate();
-          setIsProcessingOCR(false);
-        } catch (error) {
-          console.error('Recognition error:', error);
-          await worker.terminate();
-          throw error;
-        }
-      })();
-
-      // Timeout after 120 seconds
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('OCR timeout — processamento excedeu 120 segundos')), 120000)
-      );
-
-      await Promise.race([ocrPromise, timeoutPromise]);
-    } catch (error) {
-      console.error('OCR Error:', error);
-      setOcrStatus(`✗ Erro no OCR: ${error.message}`);
-      setIsProcessingOCR(false);
+      localStorage.setItem('scannerDocuments', JSON.stringify(docs));
+    } catch (e) {
+      console.error('Error saving:', e);
     }
-  }, [runVisionOCR, VISION_API_KEY]);
-
-  const computeOtsuThreshold = useCallback((imageData) => {
-    const data = imageData.data;
-    const histogram = new Array(256).fill(0);
-    const total = data.length / 4;
-
-    for (let i = 0; i < data.length; i += 4) {
-      histogram[data[i]]++;
-    }
-
-    let sum = 0;
-    for (let t = 0; t < 256; t++) sum += t * histogram[t];
-
-    let sumB = 0, wB = 0, maxVariance = 0, threshold = 128;
-
-    for (let t = 0; t < 256; t++) {
-      wB += histogram[t];
-      if (wB === 0) continue;
-      const wF = total - wB;
-      if (wF === 0) break;
-
-      sumB += t * histogram[t];
-      const mB = sumB / wB;
-      const mF = (sum - sumB) / wF;
-      const variance = wB * wF * (mB - mF) ** 2;
-
-      if (variance > maxVariance) {
-        maxVariance = variance;
-        threshold = t;
-      }
-    }
-
-    return threshold;
   }, []);
 
-  // 3x3 unsharp-mask sharpening — improves text edge clarity for OCR
-  const applySharpening = useCallback((imageData) => {
-    const w = imageData.width;
-    const h = imageData.height;
-    const src = new Uint8ClampedArray(imageData.data);
-    const dst = imageData.data;
-    // kernel: [-1,-1,-1 / -1,9,-1 / -1,-1,-1]
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        const i = (y * w + x) * 4;
-        const v = 9 * src[i]
-          - src[((y-1)*w + (x-1))*4] - src[((y-1)*w + x)*4] - src[((y-1)*w + (x+1))*4]
-          - src[(y*w + (x-1))*4]                              - src[(y*w + (x+1))*4]
-          - src[((y+1)*w + (x-1))*4] - src[((y+1)*w + x)*4] - src[((y+1)*w + (x+1))*4];
-        dst[i] = dst[i+1] = dst[i+2] = Math.min(255, Math.max(0, v));
-      }
-    }
-    return imageData;
-  }, []);
-
-  const applyOcrPreprocessing = useCallback((imageData, mode) => {
+  // Image processing / filters
+  const applyFilter = useCallback((imageData, filter) => {
     const data = imageData.data;
 
-    // Step 1: Convert to grayscale (all modes)
+    if (filter === 'original') return imageData;
+
+    // Grayscale (all non-original modes start here)
     for (let i = 0; i < data.length; i += 4) {
-      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      data[i] = data[i + 1] = data[i + 2] = gray;
+      const g = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      data[i] = data[i + 1] = data[i + 2] = g;
     }
 
-    if (mode === 'normal') {
-      // Normal: grayscale + sharpening — crisp edges help LSTM without distorting characters
-      return applySharpening(imageData);
-    }
+    if (filter === 'grayscale') return imageData;
 
-    if (mode === 'documento') {
-      // Documento: contrast stretch + sharpening
+    if (filter === 'enhanced') {
       for (let i = 0; i < data.length; i += 4) {
-        const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.4 + 128));
+        const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.5 + 128));
         data[i] = data[i + 1] = data[i + 2] = v;
       }
-      return applySharpening(imageData);
+      return imageData;
     }
 
-    // Aprimorado: strong contrast + Otsu binarization (for very dark / low-contrast docs)
-    for (let i = 0; i < data.length; i += 4) {
-      const v = Math.min(255, Math.max(0, (data[i] - 128) * 1.8 + 128));
-      data[i] = data[i + 1] = data[i + 2] = v;
-    }
-    applySharpening(imageData);
-    const threshold = computeOtsuThreshold(imageData);
-    for (let i = 0; i < data.length; i += 4) {
-      const value = data[i] > threshold ? 255 : 0;
-      data[i] = data[i + 1] = data[i + 2] = value;
+    if (filter === 'bw') {
+      // Strong contrast stretch
+      for (let i = 0; i < data.length; i += 4) {
+        const v = Math.min(255, Math.max(0, (data[i] - 128) * 2.0 + 128));
+        data[i] = data[i + 1] = data[i + 2] = v;
+      }
+      // Otsu threshold
+      const hist = new Array(256).fill(0);
+      const total = data.length / 4;
+      for (let i = 0; i < data.length; i += 4) hist[data[i]]++;
+      let sum = 0;
+      for (let t = 0; t < 256; t++) sum += t * hist[t];
+      let sumB = 0, wB = 0, maxVar = 0, thresh = 128;
+      for (let t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (!wB) continue;
+        const wF = total - wB;
+        if (!wF) break;
+        sumB += t * hist[t];
+        const mB = sumB / wB, mF = (sum - sumB) / wF;
+        const variance = wB * wF * (mB - mF) ** 2;
+        if (variance > maxVar) { maxVar = variance; thresh = t; }
+      }
+      for (let i = 0; i < data.length; i += 4) {
+        const val = data[i] > thresh ? 255 : 0;
+        data[i] = data[i + 1] = data[i + 2] = val;
+      }
+      return imageData;
     }
 
     return imageData;
-  }, [computeOtsuThreshold, applySharpening]);
+  }, []);
 
-  const processImage = useCallback(async (imageSrc) => {
-    console.log('Processing image...');
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    img.onload = async () => {
-      console.log('Image loaded, dimensions:', img.width, 'x', img.height);
+  const processImage = useCallback((imageSrc) => {
+    return new Promise((resolve) => {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(2.5, Math.max(1, 2000 / img.width));
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-      // Limit to 1600px max — larger images slow Tesseract without accuracy gain
-      const scaleFactor = Math.min(2.5, Math.max(1, 1600 / img.width));
-      const processedWidth = img.width * scaleFactor;
-      const processedHeight = img.height * scaleFactor;
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const processed = applyFilter(imageData, scanFilter);
+        ctx.putImageData(processed, 0, 0);
 
-      canvas.width = processedWidth;
-      canvas.height = processedHeight;
-      ctx.drawImage(img, 0, 0, processedWidth, processedHeight);
-
-      const imageData = ctx.getImageData(0, 0, processedWidth, processedHeight);
-
-      const preprocessed = applyOcrPreprocessing(imageData, ocrMode);
-      ctx.putImageData(preprocessed, 0, 0);
-
-      const processedSrc = canvas.toDataURL('image/png');
-      console.log('Image processed, adding to processed images');
-      setProcessedImages(prev => [...prev, processedSrc]);
-
-      runOCRInBackground(processedSrc);
-    };
-    img.src = imageSrc;
-  }, [ocrMode, applyOcrPreprocessing, runOCRInBackground]);
-
-  const capture = useCallback(() => {
-    const imageSrc = webcamRef.current.getScreenshot();
-    setCapturedImages(prev => [...prev, imageSrc]);
-    processImage(imageSrc);
-  }, [processImage]);
-
-  const saveDocument = useCallback(async (uploadToDrive = false) => {
-    console.log('Starting document save...');
-    if (processedImages.length === 0 || !documentName.trim()) {
-      console.log('Missing images or document name');
-      return;
-    }
-
-    try {
-      console.log('Creating PDF...');
-      const pdf = new jsPDF();
-      processedImages.forEach((imgSrc, index) => {
-        if (index > 0) pdf.addPage();
-        pdf.addImage(imgSrc, 'JPEG', 10, 10, 190, 140);
-      });
-
-      const pdfBlob = pdf.output('blob');
-      console.log('PDF created, size:', pdfBlob.size);
-
-      const newDoc = {
-        id: Date.now(),
-        name: documentName,
-        category: selectedCategory,
-        pdfBlob: pdfBlob,
-        date: new Date().toISOString(),
-        preview: processedImages[0],
-        extractedText: extractedText
+        resolve(canvas.toDataURL('image/jpeg', 0.92));
       };
+      img.src = imageSrc;
+    });
+  }, [scanFilter, applyFilter]);
 
-      const updatedDocs = [...savedDocuments, newDoc];
-      setSavedDocuments(updatedDocs);
-      saveToStorage(updatedDocs);
-      console.log('Document saved locally');
+  const capture = useCallback(async () => {
+    if (!webcamRef.current || isProcessing) return;
+    setIsProcessing(true);
+    try {
+      const imageSrc = webcamRef.current.getScreenshot();
+      if (!imageSrc) return;
+      const processed = await processImage(imageSrc);
+      setProcessedImages(prev => [...prev, processed]);
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [processImage, isProcessing]);
 
-      if (uploadToDrive && isGoogleSignedIn) {
-        try {
-          console.log('Uploading to Google Drive...');
-          const file = new File([pdfBlob], `${documentName}.pdf`, { type: 'application/pdf' });
-          await uploadToGoogleDrive(file, `${documentName}.pdf`);
-          alert('Documento salvo localmente e enviado para Google Drive!');
-        } catch (error) {
-          console.error('Google Drive upload error:', error);
-          alert('Documento salvo localmente, mas falhou o upload para Google Drive.');
-        }
-      } else {
-        alert('Documento salvo com sucesso!');
+  const removeImage = useCallback((index) => {
+    setProcessedImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const clearAll = useCallback(() => {
+    setProcessedImages([]);
+    setDocumentName('');
+  }, []);
+
+  const saveDocument = useCallback(async () => {
+    if (processedImages.length === 0 || !documentName.trim()) return;
+    setIsProcessing(true);
+    try {
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pw = pdf.internal.pageSize.getWidth();
+      const ph = pdf.internal.pageSize.getHeight();
+      const margin = 8;
+
+      for (let i = 0; i < processedImages.length; i++) {
+        if (i > 0) pdf.addPage();
+        pdf.addImage(processedImages[i], 'JPEG', margin, margin, pw - 2 * margin, ph - 2 * margin);
       }
 
-      // Reset
-      setCapturedImages([]);
+      const pdfBlob = pdf.output('blob');
+      const newDoc = {
+        id: Date.now(),
+        name: documentName.trim(),
+        category: selectedCategory,
+        pdfBlob,
+        date: new Date().toISOString(),
+        preview: processedImages[0],
+        pageCount: processedImages.length,
+      };
+
+      const updated = [...savedDocuments, newDoc];
+      setSavedDocuments(updated);
+      saveToStorage(updated);
       setProcessedImages([]);
       setDocumentName('');
-    } catch (error) {
-      console.error('Save document error:', error);
-      alert('Erro ao salvar documento: ' + error.message);
+      setCurrentView('documents');
+    } catch (e) {
+      alert('Erro ao salvar: ' + e.message);
+    } finally {
+      setIsProcessing(false);
     }
-  }, [processedImages, documentName, selectedCategory, savedDocuments, saveToStorage, extractedText]);
+  }, [processedImages, documentName, selectedCategory, savedDocuments, saveToStorage]);
 
   const deleteDocument = useCallback((id) => {
-    const updatedDocs = savedDocuments.filter(doc => doc.id !== id);
-    setSavedDocuments(updatedDocs);
-    saveToStorage(updatedDocs);
+    const updated = savedDocuments.filter(d => d.id !== id);
+    setSavedDocuments(updated);
+    saveToStorage(updated);
+    setDeleteConfirm(null);
   }, [savedDocuments, saveToStorage]);
 
   const downloadDocument = useCallback((doc) => {
     const url = URL.createObjectURL(doc.pdfBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${doc.name}.pdf`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${doc.name}.pdf`;
+    a.click();
     URL.revokeObjectURL(url);
   }, []);
 
-  const showDocumentText = useCallback((doc) => {
-    setSelectedDocText(doc);
-  }, []);
-
-  const closeTextModal = useCallback(() => {
-    setSelectedDocText(null);
-  }, []);
-
-  const clearImages = useCallback(() => {
-    setCapturedImages([]);
-    setProcessedImages([]);
-    setExtractedText('');
-  }, []);
-
-  const shareDocument = useCallback(async (doc) => {
-    const file = new File([doc.pdfBlob], `${doc.name}.pdf`, { type: 'application/pdf' });
-
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: doc.name,
-          files: [file],
+  // Google Drive — lazy initialization, only when user clicks "Google Drive"
+  const signInAndUploadToDrive = useCallback(async (doc) => {
+    if (!CLIENT_ID || !API_KEY) {
+      alert('Google Drive não configurado. Verifique as variáveis de ambiente.');
+      return;
+    }
+    setIsDriveLoading(true);
+    try {
+      await new Promise((resolve, reject) => {
+        if (!window.gapi) { reject(new Error('Google API não carregada')); return; }
+        gapi.load('client:auth2', () => {
+          gapi.client.init({
+            apiKey: API_KEY,
+            clientId: CLIENT_ID,
+            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+            scope: 'https://www.googleapis.com/auth/drive.file',
+          }).then(resolve).catch(reject);
         });
-      } catch (err) {
-        console.error('Erro no compartilhamento:', err);
-      }
-    } else {
-      const url = URL.createObjectURL(file);
-      const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(`Documento: ${doc.name}`)} ${encodeURIComponent(url)}`;
-      const emailUrl = `mailto:?subject=${encodeURIComponent(doc.name)}&body=${encodeURIComponent('Documento escaneado: ' + url)}`;
+      });
 
-      if (window.confirm('Compartilhar via WhatsApp? Clique em Cancelar para email.')) {
-        window.open(whatsappUrl, '_blank');
-      } else {
-        window.open(emailUrl, '_blank');
-      }
+      const auth = gapi.auth2.getAuthInstance();
+      if (!auth.isSignedIn.get()) await auth.signIn();
+      setIsGoogleSignedIn(true);
+      setGoogleUser(auth.currentUser.get().getBasicProfile());
+
+      const token = auth.currentUser.get().getAuthResponse().access_token;
+      const file = new File([doc.pdfBlob], `${doc.name}.pdf`, { type: 'application/pdf' });
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify({ name: `${doc.name}.pdf` })], { type: 'application/json' }));
+      form.append('file', file);
+
+      const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!resp.ok) throw new Error('Falha no upload para o Drive');
+
+      alert(`"${doc.name}" enviado ao Google Drive com sucesso!`);
+      setShareModal(null);
+    } catch (e) {
+      alert('Erro ao enviar para o Drive: ' + e.message);
+    } finally {
+      setIsDriveLoading(false);
+    }
+  }, [CLIENT_ID, API_KEY]);
+
+  const shareViaWhatsApp = useCallback((doc) => {
+    const url = URL.createObjectURL(doc.pdfBlob);
+    window.open(`https://wa.me/?text=${encodeURIComponent(doc.name + ' - ' + url)}`, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }, []);
+
+  const shareViaEmail = useCallback((doc) => {
+    const url = URL.createObjectURL(doc.pdfBlob);
+    window.open(`mailto:?subject=${encodeURIComponent(doc.name)}&body=${encodeURIComponent('Segue o documento escaneado:\n' + url)}`, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }, []);
+
+  const shareNative = useCallback(async (doc) => {
+    if (!navigator.share) return false;
+    try {
+      const file = new File([doc.pdfBlob], `${doc.name}.pdf`, { type: 'application/pdf' });
+      await navigator.share({ title: doc.name, files: [file] });
+      return true;
+    } catch {
+      return false;
     }
   }, []);
 
   return (
     <div className="app">
-      <header className="header">
-        <h1>Document Scanner</h1>
-        <p>Escaneie documentos rapidamente com seu dispositivo móvel</p>
-        <div className="header-controls">
-          <div className="google-auth">
-            {isGoogleSignedIn ? (
-              <div className="google-user">
-                <span>Olá, {googleUser?.getName()}</span>
-                <button className="btn small" onClick={handleGoogleSignOut}>
-                  Desconectar Google
-                </button>
-              </div>
-            ) : (
-              <button className="btn small" onClick={handleGoogleSignIn}>
-                Conectar Google Drive
-              </button>
-            )}
-          </div>
-          <nav className="nav">
-            <button
-              className={`nav-btn ${currentView === 'scanner' ? 'active' : ''}`}
-              onClick={() => setCurrentView('scanner')}
-            >
-              Scanner
-            </button>
-            <button
-              className={`nav-btn ${currentView === 'documents' ? 'active' : ''}`}
-              onClick={() => setCurrentView('documents')}
-            >
-              Documentos Salvos
-            </button>
-          </nav>
+      <header className="app-header">
+        <div className="header-left">
+          <h1 className="app-title">Scanner</h1>
         </div>
+        <nav className="app-nav">
+          <button
+            className={`nav-btn ${currentView === 'scanner' ? 'active' : ''}`}
+            onClick={() => setCurrentView('scanner')}
+          >
+            Câmera
+          </button>
+          <button
+            className={`nav-btn ${currentView === 'documents' ? 'active' : ''}`}
+            onClick={() => setCurrentView('documents')}
+          >
+            Documentos
+            {savedDocuments.length > 0 && (
+              <span className="nav-badge">{savedDocuments.length}</span>
+            )}
+          </button>
+        </nav>
       </header>
 
+      {/* ── SCANNER VIEW ── */}
       {currentView === 'scanner' && (
-        <div className="scanner-container">
-          <section className="camera-section">
-            <h2>Câmera</h2>
-            <div className="video-container">
-              {isCameraOn ? (
+        <div className="scanner-view">
+
+          {/* Camera area */}
+          <div className="camera-area">
+            {isCameraOn ? (
+              <>
                 <Webcam
                   audio={false}
                   ref={webcamRef}
                   screenshotFormat="image/png"
                   videoConstraints={videoConstraints}
-                  style={{ width: '100%', height: 'auto' }}
+                  className="camera-feed"
+                  onUserMedia={handleCameraStart}
                 />
-              ) : (
-                <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
-                  Câmera desativada
+                {/* Document framing overlay */}
+                <div className="camera-overlay">
+                  <div className="frame-guide">
+                    <span className="corner tl" />
+                    <span className="corner tr" />
+                    <span className="corner bl" />
+                    <span className="corner br" />
+                    <span className="frame-hint">Enquadre o documento</span>
+                  </div>
+                  {showGrid && (
+                    <div className="grid-overlay">
+                      <div className="grid-line h" style={{ top: '33.3%' }} />
+                      <div className="grid-line h" style={{ top: '66.6%' }} />
+                      <div className="grid-line v" style={{ left: '33.3%' }} />
+                      <div className="grid-line v" style={{ left: '66.6%' }} />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="controls">
-              {!isCameraOn ? (
-                <button className="btn" onClick={startCamera}>
-                  Iniciar Câmera
-                </button>
-              ) : (
-                <>
-                  <button className="btn" onClick={capture}>
-                    Capturar
-                  </button>
-                  <button className="btn" onClick={stopCamera}>
-                    Parar Câmera
-                  </button>
-                </>
-              )}
-            </div>
-          </section>
+              </>
+            ) : (
+              <div className="camera-placeholder" onClick={() => setIsCameraOn(true)}>
+                <div className="camera-icon-big">📷</div>
+                <p>Toque para ativar a câmera</p>
+                <span className="hint-text">Posicione o documento em superfície plana com boa iluminação</span>
+              </div>
+            )}
+          </div>
 
-          {processedImages.length > 0 && (
-            <section className="preview-section">
-              <h2>Imagens Processadas ({processedImages.length})</h2>
-              <div className="preview-container">
-                {processedImages.map((img, index) => (
-                  <img
-                    key={index}
-                    src={img}
-                    alt={`Processada ${index + 1}`}
-                    className="preview-img"
-                  />
+          {/* Camera toolbar */}
+          {isCameraOn && (
+            <>
+              <div className="camera-toolbar">
+                <button
+                  className={`tool-btn ${showGrid ? 'active' : ''}`}
+                  onClick={() => setShowGrid(g => !g)}
+                  title="Grade de enquadramento"
+                >
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="1"/>
+                    <line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+                    <line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
+                  </svg>
+                  <span>Grade</span>
+                </button>
+
+                <button
+                  className="capture-btn"
+                  onClick={capture}
+                  disabled={isProcessing}
+                  title="Capturar"
+                >
+                  <span className="capture-ring" />
+                  <span className="capture-dot" />
+                </button>
+
+                <button
+                  className={`tool-btn ${torchOn ? 'active' : ''} ${!torchSupported ? 'disabled' : ''}`}
+                  onClick={toggleTorch}
+                  title="Lanterna"
+                  disabled={!torchSupported}
+                >
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M8 2l4 6h-2v8l-4-8h2z"/>
+                    <path d="M13 10h3l-6 12v-8h3z" fill={torchOn ? 'currentColor' : 'none'}/>
+                  </svg>
+                  <span>Flash</span>
+                </button>
+              </div>
+
+              {/* Filter bar */}
+              <div className="filter-bar">
+                {filters.map(f => (
+                  <button
+                    key={f.value}
+                    className={`filter-btn ${scanFilter === f.value ? 'active' : ''}`}
+                    onClick={() => setScanFilter(f.value)}
+                  >
+                    {f.label}
+                  </button>
                 ))}
               </div>
 
-              <div className="ocr-section">
-                <h3>Texto Extraído</h3>
-                {ocrStatus && <p style={{ color: '#ffc107', fontSize: '0.9rem', marginBottom: '10px' }}>{ocrStatus}</p>}
-                {isProcessingOCR ? (
-                  <p>Processando OCR. Isso pode levar alguns minutos na primeira execução...</p>
-                ) : (
-                  <textarea
-                    value={extractedText}
-                    readOnly
-                    className="ocr-textarea"
-                    placeholder="Texto extraído aparecerá aqui..."
-                  />
+              {/* Tips */}
+              <div className="scan-tips">
+                <span>💡 Dicas: superfície plana · boa iluminação · câmera paralela ao documento</span>
+              </div>
+            </>
+          )}
+
+          {/* Captured pages */}
+          {processedImages.length > 0 && (
+            <div className="pages-section">
+              <div className="pages-header">
+                <h3>Páginas capturadas ({processedImages.length})</h3>
+                {!isCameraOn && (
+                  <button className="btn-add-page" onClick={() => setIsCameraOn(true)}>
+                    + Adicionar página
+                  </button>
                 )}
               </div>
 
-              <div className="save-section">
+              <div className="pages-grid">
+                {processedImages.map((img, i) => (
+                  <div key={i} className="page-thumb">
+                    <img src={img} alt={`Página ${i + 1}`} />
+                    <button className="remove-page-btn" onClick={() => removeImage(i)}>✕</button>
+                    <span className="page-number">{i + 1}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="save-form">
                 <input
                   type="text"
                   placeholder="Nome do documento"
                   value={documentName}
-                  onChange={(e) => setDocumentName(e.target.value)}
-                  className="doc-name-input"
+                  onChange={e => setDocumentName(e.target.value)}
+                  className="name-input"
+                  maxLength={80}
                 />
                 <select
-                  value={ocrMode}
-                  onChange={(e) => setOcrMode(e.target.value)}
-                  className="category-select"
-                >
-                  {ocrModes.map(mode => (
-                    <option key={mode.value} value={mode.value}>{mode.label}</option>
-                  ))}
-                </select>
-                <select
                   value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="category-select"
+                  onChange={e => setSelectedCategory(e.target.value)}
+                  className="cat-select"
                 >
-                  {categories.map(cat => (
-                    <option key={cat} value={cat}>{cat.charAt(0).toUpperCase() + cat.slice(1)}</option>
+                  {categories.map(c => (
+                    <option key={c} value={c}>{c}</option>
                   ))}
                 </select>
-                {isGoogleSignedIn && (
-                  <label className="upload-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={uploadToDrive}
-                      onChange={(e) => setUploadToDrive(e.target.checked)}
-                    />
-                    Enviar para Google Drive
-                  </label>
-                )}
-                <div className="controls">
-                  <button className="btn save-btn" onClick={() => saveDocument(uploadToDrive)} disabled={!documentName.trim()}>
-                    Salvar Documento
+                <div className="form-actions">
+                  <button
+                    className="btn-save"
+                    onClick={saveDocument}
+                    disabled={!documentName.trim() || isProcessing}
+                  >
+                    {isProcessing ? 'Salvando...' : 'Salvar PDF'}
                   </button>
-                  <button className="btn" onClick={clearImages}>
-                    Limpar
+                  <button className="btn-clear" onClick={clearAll}>
+                    Descartar
                   </button>
                 </div>
               </div>
-            </section>
+            </div>
+          )}
+
+          {!isCameraOn && processedImages.length === 0 && (
+            <div className="empty-scanner">
+              <p>Ative a câmera para começar a escanear</p>
+            </div>
           )}
         </div>
       )}
 
+      {/* ── DOCUMENTS VIEW ── */}
       {currentView === 'documents' && (
-        <div className="documents-container">
-          <h2>Documentos Salvos</h2>
-          {categories.map(category => (
-            <div key={category} className="category-section">
-              <h3>{category.charAt(0).toUpperCase() + category.slice(1)}</h3>
-              <div className="documents-list">
-                {savedDocuments
-                  .filter(doc => doc.category === category)
-                  .map(doc => (
-                    <div key={doc.id} className="document-item">
-                      <img src={doc.preview} alt={doc.name} className="doc-preview" />
-                      <div className="doc-info">
-                        <h4>{doc.name}</h4>
-                        <p>{new Date(doc.date).toLocaleDateString()}</p>
-                      </div>
-                      <div className="doc-actions">
-                        <button className="btn small" onClick={() => downloadDocument(doc)}>
-                          Baixar PDF
-                        </button>
-                        <button className="btn small" onClick={() => showDocumentText(doc)}>
-                          Ver Texto
-                        </button>
-                        <button className="btn small" onClick={() => shareDocument(doc)}>
-                          Compartilhar
-                        </button>
-                        <button className="btn small danger" onClick={() => deleteDocument(doc.id)}>
-                          Excluir
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                {savedDocuments.filter(doc => doc.category === category).length === 0 && (
-                  <p className="no-docs">Nenhum documento nesta categoria</p>
-                )}
-              </div>
+        <div className="docs-view">
+          <div className="docs-header">
+            <h2>Documentos Salvos</h2>
+          </div>
+
+          {savedDocuments.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">📄</div>
+              <p>Nenhum documento salvo ainda</p>
+              <button className="btn-save" onClick={() => setCurrentView('scanner')}>
+                Escanear primeiro documento
+              </button>
             </div>
-          ))}
+          ) : (
+            <div className="docs-list">
+              {savedDocuments.slice().reverse().map(doc => (
+                <div key={doc.id} className="doc-card">
+                  <div className="doc-thumb-wrap" onClick={() => setPreviewDoc(doc)}>
+                    <img src={doc.preview} alt={doc.name} className="doc-thumb" />
+                    <span className="doc-pages">{doc.pageCount || 1}p</span>
+                  </div>
+                  <div className="doc-info">
+                    <strong className="doc-name">{doc.name}</strong>
+                    <span className="doc-meta">{doc.category} · {new Date(doc.date).toLocaleDateString('pt-BR')}</span>
+                  </div>
+                  <div className="doc-actions">
+                    <button className="action-btn share" onClick={() => setShareModal(doc)} title="Compartilhar">
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                        <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                      </svg>
+                    </button>
+                    <button className="action-btn download" onClick={() => downloadDocument(doc)} title="Baixar PDF">
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                    </button>
+                    <button className="action-btn delete" onClick={() => setDeleteConfirm(doc.id)} title="Excluir">
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+                        <path d="M10 11v6M14 11v6"/>
+                        <path d="M9 6V4h6v2"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {selectedDocText && (
-        <div className="modal-overlay" onClick={closeTextModal}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>{selectedDocText.name} - Texto Extraído</h3>
-              <button className="close-btn" onClick={closeTextModal}>×</button>
+      {/* ── SHARE MODAL ── */}
+      {shareModal && (
+        <div className="modal-overlay" onClick={() => setShareModal(null)}>
+          <div className="share-modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Compartilhar</h3>
+              <button className="close-modal" onClick={() => setShareModal(null)}>✕</button>
             </div>
-            <div className="modal-body">
-              <textarea
-                value={selectedDocText.extractedText || 'Nenhum texto extraído'}
-                readOnly
-                className="modal-textarea"
-              />
+            <p className="share-doc-name">"{shareModal.name}"</p>
+            <div className="share-grid">
+              <button className="share-opt whatsapp" onClick={() => shareViaWhatsApp(shareModal)}>
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="#25D366">
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                </svg>
+                <span>WhatsApp</span>
+              </button>
+
+              <button className="share-opt email" onClick={() => shareViaEmail(shareModal)}>
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#4285F4" strokeWidth="2">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                  <polyline points="22,6 12,13 2,6"/>
+                </svg>
+                <span>E-mail</span>
+              </button>
+
+              <button
+                className="share-opt drive"
+                onClick={() => signInAndUploadToDrive(shareModal)}
+                disabled={isDriveLoading}
+              >
+                <svg viewBox="0 0 87.3 78" width="28" height="28">
+                  <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 52H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/>
+                  <path d="M43.65 25L29.9 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 47.5A9.06 9.06 0 000 52h27.5z" fill="#00AC47"/>
+                  <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.65 10.15z" fill="#EA4335"/>
+                  <path d="M43.65 25L57.4 0H29.9z" fill="#00832D"/>
+                  <path d="M59.8 52H87.3L73.55 28.5H45.5z" fill="#2684FC"/>
+                  <path d="M43.65 25L29.9 52H59.8z" fill="#00AC47"/>
+                </svg>
+                <span>{isDriveLoading ? 'Enviando...' : 'Google Drive'}</span>
+              </button>
+
+              <button className="share-opt download" onClick={() => { downloadDocument(shareModal); setShareModal(null); }}>
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#666" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <span>Baixar PDF</span>
+              </button>
+
+              {navigator.share && (
+                <button className="share-opt native" onClick={() => shareNative(shareModal)}>
+                  <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#888" strokeWidth="2">
+                    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                    <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                  </svg>
+                  <span>Outras opções</span>
+                </button>
+              )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DELETE CONFIRM ── */}
+      {deleteConfirm && (
+        <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="confirm-modal" onClick={e => e.stopPropagation()}>
+            <p>Excluir este documento permanentemente?</p>
+            <div className="confirm-btns">
+              <button className="btn-danger" onClick={() => deleteDocument(deleteConfirm)}>Excluir</button>
+              <button className="btn-cancel" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PREVIEW MODAL ── */}
+      {previewDoc && (
+        <div className="modal-overlay" onClick={() => setPreviewDoc(null)}>
+          <div className="preview-modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{previewDoc.name}</h3>
+              <button className="close-modal" onClick={() => setPreviewDoc(null)}>✕</button>
+            </div>
+            <img src={previewDoc.preview} alt={previewDoc.name} className="preview-full" />
           </div>
         </div>
       )}
