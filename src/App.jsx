@@ -299,12 +299,6 @@ function App() {
     }
   }, [runVisionOCR, VISION_API_KEY]);
 
-  const capture = useCallback(() => {
-    const imageSrc = webcamRef.current.getScreenshot();
-    setCapturedImages(prev => [...prev, imageSrc]);
-    processImage(imageSrc);
-  }, [processImage]);
-
   const computeOtsuThreshold = useCallback((imageData) => {
     const data = imageData.data;
     const histogram = new Array(256).fill(0);
@@ -413,7 +407,11 @@ function App() {
     img.src = imageSrc;
   }, [ocrMode, applyOcrPreprocessing, runOCRInBackground]);
 
-
+  const capture = useCallback(() => {
+    const imageSrc = webcamRef.current.getScreenshot();
+    setCapturedImages(prev => [...prev, imageSrc]);
+    processImage(imageSrc);
+  }, [processImage]);
 
   const saveDocument = useCallback(async (uploadToDrive = false) => {
     console.log('Starting document save...');
