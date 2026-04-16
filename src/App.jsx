@@ -272,11 +272,9 @@ function App() {
 
           if (text && text.trim()) {
             setExtractedText(prev => prev + text + '\n\n');
-            setOcrStatus('OCR concluído com sucesso!');
-            setTimeout(() => setOcrStatus(''), 3000);
+            setOcrStatus('✓ OCR concluído (Tesseract)');
           } else {
-            setOcrStatus('OCR: nenhum texto encontrado na imagem');
-            setTimeout(() => setOcrStatus(''), 3000);
+            setOcrStatus('⚠ Tesseract não encontrou texto. Tente o modo Aprimorado ou melhore a iluminação.');
           }
 
           await worker.terminate();
@@ -287,26 +285,25 @@ function App() {
           throw error;
         }
       })();
-      
+
       // Timeout after 120 seconds
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('OCR timeout - processamento excedeu 120 segundos')), 120000)
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('OCR timeout — processamento excedeu 120 segundos')), 120000)
       );
-      
+
       await Promise.race([ocrPromise, timeoutPromise]);
     } catch (error) {
       console.error('OCR Error:', error);
-      setOcrStatus(`Erro no OCR: ${error.message}`);
+      setOcrStatus(`✗ Erro no OCR: ${error.message}`);
       setIsProcessingOCR(false);
-      setTimeout(() => setOcrStatus(''), 5000);
     }
-  }, []);
+  }, [runVisionOCR, VISION_API_KEY]);
 
   const capture = useCallback(() => {
     const imageSrc = webcamRef.current.getScreenshot();
     setCapturedImages(prev => [...prev, imageSrc]);
     processImage(imageSrc);
-  }, []);
+  }, [processImage]);
 
   const computeOtsuThreshold = useCallback((imageData) => {
     const data = imageData.data;
@@ -387,7 +384,8 @@ function App() {
     img.onload = async () => {
       console.log('Image loaded, dimensions:', img.width, 'x', img.height);
 
-      const scaleFactor = Math.min(3.0, Math.max(1, 2000 / img.width));
+      // Limit to 1600px max — larger images slow Tesseract without accuracy gain
+      const scaleFactor = Math.min(2.5, Math.max(1, 1600 / img.width));
       const processedWidth = img.width * scaleFactor;
       const processedHeight = img.height * scaleFactor;
 
